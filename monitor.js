@@ -19,31 +19,45 @@ function salvarEstado(estado) {
   fs.writeFileSync(ARQUIVO_ESTADO, JSON.stringify(estado, null, 2));
 }
 
+async function buscarPagina(ano, pagina) {
+  const url = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=${pagina}&page_size=100`;
+  const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!response.ok) {
+    console.error(`❌ Erro na página ${pagina}: ${response.status}`);
+    return null;
+  }
+  return response.json();
+}
+
 async function buscarProposicoes() {
   const ano = new Date().getFullYear();
-  // ordering=-numero garante as mais recentes primeiro sem depender de data_apresentacao
-  const url = `${API_BASE}/materia/materialegislativa/?ano=${ano}&page=1&page_size=100&ordering=-numero`;
-
   console.log(`🔍 Buscando proposições de ${ano}...`);
 
-  const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  // 1ª chamada: sonda na página 1 para descobrir total de páginas
+  // (ordering é ignorado pelo SAPL — a página 1 traz as mais antigas)
+  const sonda = await buscarPagina(ano, 1);
+  if (!sonda) return [];
 
-  if (!response.ok) {
-    const texto = await response.text();
-    console.error(`❌ Erro na API: ${response.status} ${response.statusText}`);
-    console.error('Resposta:', texto.substring(0, 300));
-    return [];
+  const totalEntries = sonda.pagination?.total_entries || sonda.count || 0;
+  const totalPages = sonda.pagination?.total_pages || Math.ceil(totalEntries / 100) || 1;
+  console.log(`📊 Total: ${totalEntries} proposições, ${totalPages} páginas`);
+
+  // Busca as últimas 2 páginas — onde ficam as proposições mais recentes
+  const paginas = totalPages > 1 ? [totalPages - 1, totalPages] : [1];
+
+  const resultados = [];
+  for (const pagina of paginas) {
+    console.log(`📄 Buscando página ${pagina}/${totalPages}...`);
+    const json = await buscarPagina(ano, pagina);
+    if (json?.results) resultados.push(...json.results);
   }
 
-  const json = await response.json();
-  const lista = json.results || (Array.isArray(json) ? json : []);
-  console.log(`📊 ${lista.length} proposições recebidas (total: ${json.pagination?.total_entries || json.count || '?'})`);
-  return lista;
+  console.log(`📦 ${resultados.length} proposições recebidas`);
+  return resultados;
 }
 
 function normalizarData(str) {
   if (!str) return '-';
-  // YYYY-MM-DD → DD/MM/YYYY
   if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
     const [y, m, d] = str.substring(0, 10).split('-');
     return `${d}/${m}/${y}`;
@@ -51,7 +65,7 @@ function normalizarData(str) {
   return str;
 }
 
-// Extrai o tipo legível do campo __str__: "Indicação nº 15315 de 2026" → "INDICAÇÃO"
+// "Indicação nº 15315 de 2026" → "INDICAÇÃO"
 function extrairTipo(str) {
   if (!str) return 'OUTRO';
   const match = str.match(/^(.+?)\s+n[ºo°]/i);
@@ -156,11 +170,10 @@ async function enviarEmail(novas) {
   console.log(`🆕 Proposições novas: ${novas.length}`);
 
   if (novas.length > 0) {
-    // Por tipo alfabético, número decrescente dentro de cada tipo
     novas.sort((a, b) => {
       if (a.tipo < b.tipo) return -1;
       if (a.tipo > b.tipo) return 1;
-      return (parseInt(b.numero) || 0) - (parseInt(a.numero) || 0);
+      return Number(b.numero) - Number(a.numero);
     });
 
     await enviarEmail(novas);
