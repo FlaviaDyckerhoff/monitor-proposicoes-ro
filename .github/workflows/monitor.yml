@@ -35,6 +35,10 @@ jobs:
 
       - name: Salvar estado atualizado no repositório
         run: |
+          if command -v sudo >/dev/null 2>&1; then
+            sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" || true
+          fi
+          chmod -R u+rwX "$GITHUB_WORKSPACE/.git" || true
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ ! -f estado.json ]; then
