@@ -42,8 +42,9 @@ async function buscarProposicoes() {
   const totalPages = sonda.pagination?.total_pages || Math.ceil(totalEntries / 100) || 1;
   console.log(`📊 Total: ${totalEntries} proposições, ${totalPages} páginas`);
 
-  // Busca as últimas 2 páginas — onde ficam as proposições mais recentes
-  const paginas = totalPages > 1 ? [totalPages - 1, totalPages] : [1];
+  // O SAPL/ALERO não mantém ordenação cronológica confiável entre tipos de matéria.
+  // Buscar só as últimas páginas deixa PLs recentes para trás quando entram vetos/requerimentos.
+  const paginas = Array.from({ length: totalPages }, (_, i) => i + 1);
 
   const resultados = [];
   for (const pagina of paginas) {
@@ -63,6 +64,12 @@ function normalizarData(str) {
     return `${d}/${m}/${y}`;
   }
   return str;
+}
+
+function dataIso(str) {
+  if (!str) return '';
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+  return '';
 }
 
 // "Indicação nº 15315 de 2026" → "INDICAÇÃO"
@@ -97,7 +104,8 @@ const CLIENTES_NOMES_PROPRIOS = [
   'FIRJAN', 'Red Bull', 'Sindicerv', 'Boticario', 'Boticário', 'Abrasel', 'ANBRASEL',
   'Energisa', 'EnergisaLuz', 'SABESP', 'COMGAS', 'COMGÁS', 'Eletromidia', 'Eletromídia',
   'BRT', 'Regenera', 'Nova Infra', 'Seta', 'SETA', 'AkzoNobel', 'Expedia', 'RTSC',
-  'Huawei', 'Carrefour', 'JBS', 'Ajinomoto', 'Vibra', 'Mindlab', 'ABVTEX', 'Neoenergia', 'ENEL'
+  'Huawei', 'Carrefour', 'JBS', 'Ajinomoto', 'Vibra', 'Mindlab', 'ABVTEX', 'Neoenergia', 'ENEL',
+  '4Um', '4UM', 'Opportunity', 'Oportunity', '4Um Opportunity', '4Um/Opportunity'
 ];
 
 function clientesCitadosNaProposicao(p) {
@@ -113,12 +121,84 @@ function clientesCitadosNaProposicao(p) {
   return achados;
 }
 
+const KEYWORDS_CLIENTES = [
+  {
+    cliente: '4Um/Opportunity',
+    termosDiretos: [
+      'BR-364', 'BR 364', 'BR364', 'Rota Agro Norte', 'lote CN 5', 'lote CN5',
+      'concessão de estrada', 'concessão de estradas', 'concessão rodoviária',
+      'concessao de estrada', 'concessao de estradas', 'concessao rodoviaria',
+      'pedágio', 'pedagio', 'cancela', 'free flow', 'freeflow'
+    ],
+    municipiosRota: [
+      'Porto Velho', 'Candeias do Jamari', 'Itapuã do Oeste', 'Itapua do Oeste',
+      'Ariquemes', 'Jaru', 'Ouro Preto do Oeste', 'Presidente Médici',
+      'Presidente Medici', 'Cacoal', 'Pimenta Bueno', 'Chupinguaia', 'Vilhena'
+    ],
+    termosRodovia: [
+      'rodovia', 'rodovias', 'estrada', 'estradas', 'DER/RO', 'Departamento Estadual de Estradas',
+      'pavimentação', 'pavimentacao',
+      'recuperação', 'recuperacao', 'manutenção', 'manutencao', 'ponte', 'bueiro',
+      'tapa-buracos', 'tapa buracos', 'patrolamento', 'encascalhamento', 'RO-', 'BR-'
+    ]
+  }
+];
+
+function normalizarTextoBusca(str) {
+  return String(str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function contemTermo(textoNormalizado, termo) {
+  return textoNormalizado.includes(normalizarTextoBusca(termo));
+}
+
+function clientesPorKeyword(p) {
+  const textoOriginal = [p.tipo, p.rotulo, p.titulo, p.identificacao, p.ementa]
+    .filter(Boolean)
+    .join(' ');
+  const texto = normalizarTextoBusca(textoOriginal);
+  const achados = [];
+
+  for (const regra of KEYWORDS_CLIENTES) {
+    const termos = [];
+    for (const termo of regra.termosDiretos) {
+      if (contemTermo(texto, termo)) termos.push(termo);
+    }
+
+    const temRodovia = regra.termosRodovia.some(termo => contemTermo(texto, termo));
+    if (temRodovia) {
+      for (const municipio of regra.municipiosRota) {
+        if (contemTermo(texto, municipio)) termos.push(municipio);
+      }
+    }
+
+    if (termos.length) {
+      achados.push({ cliente: regra.cliente, termos: Array.from(new Set(termos)) });
+    }
+  }
+
+  return achados;
+}
+
 function anotarClientesCitados(proposicoes) {
   for (const p of proposicoes || []) {
     const clientes = clientesCitadosNaProposicao(p);
+    const keywordHits = clientesPorKeyword(p);
+    for (const hit of keywordHits) {
+      if (!clientes.some(c => c.toLowerCase() === hit.cliente.toLowerCase())) clientes.push(hit.cliente);
+    }
     p.clientesCitados = clientes;
     if (clientes.length && p.ementa && !String(p.ementa).includes('Cliente citado:')) {
       p.ementa = String(p.ementa).trim() + ' | Cliente citado: ' + clientes.join(', ');
+    }
+    if (keywordHits.length && p.ementa && !String(p.ementa).includes('Palavra-chave:')) {
+      const detalhes = keywordHits
+        .map(hit => `${hit.cliente}: ${hit.termos.join(', ')}`)
+        .join(' | ');
+      p.ementa = String(p.ementa).trim() + ' | Palavra-chave: ' + detalhes;
     }
   }
 }
@@ -183,6 +263,12 @@ async function enviarEmail(novas) {
     </div>
   `;
 
+  if (process.env.DRY_RUN_EMAIL === 'true') {
+    console.log(`🧪 DRY_RUN_EMAIL=true — email não enviado. Proposições: ${novas.length}`);
+    console.log(novas.map(p => `${p.tipo} ${p.numero}/${p.ano} — ${p.ementa}`).join('\n'));
+    return;
+  }
+
   await transporter.sendMail({
     from: `"Monitor Rondônia" <${EMAIL_REMETENTE}>`,
     to: EMAIL_DESTINO,
@@ -199,6 +285,7 @@ async function enviarEmail(novas) {
 
   const estado = carregarEstado();
   const idsVistos = new Set(estado.proposicoes_vistas);
+  const dataCorteInicial = estado.ignorar_anteriores_a || `${new Date().getFullYear()}-01-01`;
 
   const proposicoesRaw = await buscarProposicoes();
 
@@ -209,6 +296,7 @@ async function enviarEmail(novas) {
 
   const novas = proposicoesRaw
     .filter(p => !idsVistos.has(String(p.id)))
+    .filter(p => dataIso(p.data_apresentacao) >= dataCorteInicial)
     .map(p => ({
       id: String(p.id),
       tipo: extrairTipo(p.__str__),

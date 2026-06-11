@@ -809,5 +809,6 @@
     "56814",
     "56813"
   ],
-  "ultima_execucao": "2026-06-10T14:38:45.605Z"
+  "ultima_execucao": "2026-06-10T14:38:45.605Z",
+  "ignorar_anteriores_a": "2026-06-01"
 }
