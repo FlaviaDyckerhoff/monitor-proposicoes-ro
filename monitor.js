@@ -183,6 +183,15 @@ function clientesPorKeyword(p) {
   return achados;
 }
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function anotarClientesCitados(proposicoes) {
   for (const p of proposicoes || []) {
     const clientes = clientesCitadosNaProposicao(p);
@@ -191,16 +200,32 @@ function anotarClientesCitados(proposicoes) {
       if (!clientes.some(c => c.toLowerCase() === hit.cliente.toLowerCase())) clientes.push(hit.cliente);
     }
     p.clientesCitados = clientes;
-    if (clientes.length && p.ementa && !String(p.ementa).includes('Cliente citado:')) {
-      p.ementa = String(p.ementa).trim() + ' | Cliente citado: ' + clientes.join(', ');
-    }
-    if (keywordHits.length && p.ementa && !String(p.ementa).includes('Palavra-chave:')) {
-      const detalhes = keywordHits
-        .map(hit => `${hit.cliente}: ${hit.termos.join(', ')}`)
-        .join(' | ');
-      p.ementa = String(p.ementa).trim() + ' | Palavra-chave: ' + detalhes;
-    }
+    p.keywordHits = keywordHits;
   }
+}
+
+function renderizarEmentaEmail(p) {
+  const destaques = [];
+  if (p.clientesCitados?.length) {
+    destaques.push(`
+      <div style="margin-top:8px;padding:6px 8px;background:#eef6ff;border-left:3px solid #1a73e8;color:#174ea6">
+        <strong>Cliente citado:</strong> ${escapeHtml(p.clientesCitados.join(', '))}
+      </div>`);
+  }
+  if (p.keywordHits?.length) {
+    const detalhes = p.keywordHits
+      .map(hit => `${hit.cliente}: ${hit.termos.join(', ')}`)
+      .join(' | ');
+    destaques.push(`
+      <div style="margin-top:6px;padding:6px 8px;background:#fff4e5;border-left:3px solid #f29900;color:#7a4b00">
+        <strong>Palavra-chave:</strong> ${escapeHtml(detalhes)}
+      </div>`);
+  }
+
+  return `
+    <div>${escapeHtml(p.ementa)}</div>
+    ${destaques.join('')}
+  `;
 }
 
 async function enviarEmail(novas) {
@@ -228,14 +253,14 @@ async function enviarEmail(novas) {
       <tr>
         <td style="padding:8px;border-bottom:1px solid #eee;white-space:nowrap;font-size:13px">
           <a href="${p.link}" style="color:#1a3a5c;font-weight:bold;text-decoration:none">
-            ${p.numero}/${p.ano}
+            ${escapeHtml(p.numero)}/${escapeHtml(p.ano)}
           </a>
         </td>
         <td style="padding:8px;border-bottom:1px solid #eee;color:#888;font-size:12px;white-space:nowrap">
-          ${p.data}
+          ${escapeHtml(p.data)}
         </td>
         <td style="padding:8px;border-bottom:1px solid #eee;font-size:13px">
-          ${p.ementa}
+          ${renderizarEmentaEmail(p)}
         </td>
       </tr>`).join('');
     return header + rows;
